@@ -40,7 +40,9 @@ class QueueingSimulator:
 
     def finish_packet(self, packet: Packet):
         self.sent_bits_per_flow[packet.flow] += packet.size
-        self.packet_delays_per_flow[packet.flow].append(self.time - packet.time)
+        self.packet_delays_per_flow[packet.flow].append(
+            self.time - packet.time - (packet.size / self.data_rate)
+        )
 
     def run(self):
         raise NotImplementedError
@@ -50,39 +52,59 @@ class GPSSimulator(QueueingSimulator):
     def run(self):
         next_packet_time = self.packet_arrivals[0].time
 
-        while len(self.packet_arrivals) > 0:
+        while len(self.packet_arrivals) > 0 or any(
+            len(queue) > 0 for queue in self.flow_queues.values()
+        ):
             self.enqueue_packets()
 
-            if len(self.packet_arrivals) > 0:
-                next_packet_time = self.packet_arrivals[0].time
-            else:
-                next_packet_time = sys.maxsize
+            next_packet_time = (
+                self.packet_arrivals[0].time if len(self.packet_arrivals) > 0 else None
+            )
 
             # Send bits until the next packet arrives or all packets finished
-            while self.time < next_packet_time and any(
+            while (next_packet_time is None or self.time < next_packet_time) and any(
                 len(queue) > 0 for queue in self.flow_queues.values()
             ):
                 # Send one bit of the first packet in each flow in round-robin fashion
                 # Skip the time forward until the next packet arrives or one packet finishes
-                skipped_time = min(
-                    next_packet_time - self.time,
-                    min(
-                        queue[0].remaining_size
-                        for queue in self.flow_queues.values()
-                        if len(queue) > 0
-                    ),
+                number_of_active_flows = len(
+                    [1 for queue in self.flow_queues.values() if len(queue) > 0]
                 )
-                self.time += skipped_time
-
-                for queue in self.flow_queues.values():
-                    if len(queue) > 0:
-                        if queue[0].remaining_size == skipped_time:
-                            self.finish_packet(queue.pop(0))
-                        else:
-                            queue[0].remaining_size -= skipped_time  # TODO: Data rate
+                time_until_next_packet = (next_packet_time or sys.maxsize) - self.time
+                fully_skippable_rounds = (
+                    time_until_next_packet // number_of_active_flows
+                )
+                skippable_rounds_until_packet_finishes = min(
+                    max(queue[0].remaining_size - 1, 0)
+                    for queue in self.flow_queues.values()
+                    if len(queue) > 0
+                )
+                skippable_rounds = min(
+                    fully_skippable_rounds, skippable_rounds_until_packet_finishes
+                )
+                if skippable_rounds == 0:
+                    for queue in self.flow_queues.values():
+                        if time_until_next_packet == 0:
+                            break
+                        if len(queue) > 0:
+                            self.time += 1 / self.data_rate
+                            time_until_next_packet -= 1 / self.data_rate
+                            queue[0].remaining_size -= 1
+                            if queue[0].remaining_size == 0:
+                                self.finish_packet(queue.pop(0))
+                else:
+                    for queue in self.flow_queues.values():
+                        if len(queue) > 0:
+                            queue[
+                                0
+                            ].remaining_size -= skippable_rounds
+                            self.time += skippable_rounds / self.data_rate
+                            if queue[0].remaining_size == 0:
+                                self.finish_packet(queue.pop(0))
 
             # If all packets finished, move time to the next packet time
-            self.time = next_packet_time
+            if next_packet_time is not None and next_packet_time > self.time:
+                self.time = next_packet_time
 
     def __str__(self):
         return f"GPS"
@@ -90,14 +112,16 @@ class GPSSimulator(QueueingSimulator):
 
 class RoundRobinSimulator(QueueingSimulator):
     def run(self):
-        while len(self.packet_arrivals) > 0:
+        while len(self.packet_arrivals) > 0 or any(
+            len(queue) > 0 for queue in self.flow_queues.values()
+        ):
             self.enqueue_packets()
 
             # Send first packet in each flow per round
             for flow, queue in self.flow_queues.items():
                 if len(queue) > 0:
                     packet = queue.pop(0)
-                    self.time += packet.size  # TODO: Data rate
+                    self.time += packet.size / self.data_rate
                     self.finish_packet(packet)
 
                     # While sending the packet, check if any new packets arrived
@@ -120,7 +144,9 @@ class DeficitRoundRobinSimulator(QueueingSimulator):
         self.deficit_counters = {flow: 0 for flow in self.flow_queues.keys()}
 
     def run(self):
-        while len(self.packet_arrivals) > 0:
+        while len(self.packet_arrivals) > 0 or any(
+            len(queue) > 0 for queue in self.flow_queues.values()
+        ):
             self.enqueue_packets()
 
             for flow, queue in self.flow_queues.items():
@@ -133,7 +159,7 @@ class DeficitRoundRobinSimulator(QueueingSimulator):
                     ):
                         packet = queue.pop(0)
                         self.deficit_counters[flow] -= packet.size
-                        self.time += packet.size  # TODO: Data rate
+                        self.time += packet.size / self.data_rate
                         self.finish_packet(packet)
 
                     # While sending the packet, check if any new packets arrived
@@ -245,7 +271,7 @@ def main():
     ax.set_xticks([2, 8, 14])
     ax.set_xticklabels(labels)
 
-    ax.set_title(f"Packet delay per flow by simulator for trace \"{trace}\"")
+    ax.set_title(f'Packet delay per flow by simulator for trace "{trace}"')
     ax.set_xlabel("Simulators")
     ax.set_ylabel("Delay in microseconds")
 
