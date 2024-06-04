@@ -32,9 +32,8 @@ class QueueingSimulator:
         while (
             len(self.packet_arrivals) > 0 and self.packet_arrivals[0].time <= self.time
         ):
-            self.flow_queues[self.packet_arrivals[0].flow].append(
-                self.packet_arrivals.pop(0)
-            )
+            packet = self.packet_arrivals.pop(0)
+            self.flow_queues[packet.flow].append(packet)
 
     def finish_packet(self, packet: Packet):
         self.sent_bits_per_flow[packet.flow] += packet.size
@@ -52,18 +51,18 @@ class GPSSimulator(QueueingSimulator):
             self.enqueue_packets()
 
             if len(self.packet_arrivals) > 0:
-                self.next_packet_time = self.packet_arrivals[0].time
+                next_packet_time = self.packet_arrivals[0].time
             else:
-                self.next_packet_time = sys.maxsize
+                next_packet_time = sys.maxsize
 
             # Send bits until the next packet arrives or all packets finished
-            while self.time < self.next_packet_time and any(
+            while self.time < next_packet_time and any(
                 len(queue) > 0 for queue in self.flow_queues.values()
             ):
                 # Send one bit of the first packet in each flow in round-robin fashion
                 # Skip the time forward until the next packet arrives or one packet finishes
                 skipped_time = min(
-                    self.next_packet_time - self.time,
+                    next_packet_time - self.time,
                     min(
                         queue[0].remaining_size
                         for queue in self.flow_queues.values()
@@ -79,8 +78,11 @@ class GPSSimulator(QueueingSimulator):
                         else:
                             queue[0].remaining_size -= skipped_time  # TODO: Data rate
 
-        # If all packets finished, move time to the next packet time
-        self.time = next_packet_time
+            # If all packets finished, move time to the next packet time
+            self.time = next_packet_time
+
+    def __str__(self):
+        return f"GPS"
 
 
 class RoundRobinSimulator(QueueingSimulator):
@@ -103,6 +105,9 @@ class RoundRobinSimulator(QueueingSimulator):
                 len(queue) == 0 for queue in self.flow_queues.values()
             ):
                 self.time = self.packet_arrivals[0].time
+
+    def __str__(self):
+        return f"Round-Robin"
 
 
 class DeficitRoundRobinSimulator(QueueingSimulator):
@@ -136,6 +141,9 @@ class DeficitRoundRobinSimulator(QueueingSimulator):
                 len(queue) == 0 for queue in self.flow_queues.values()
             ):
                 self.time = self.packet_arrivals[0].time
+
+    def __str__(self):
+        return f"Deficit Round-Robin"
 
 
 def main():
