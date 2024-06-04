@@ -1,6 +1,9 @@
+import json
 import sys
 from pathlib import Path
 from typing import Dict, List
+
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -147,8 +150,12 @@ class DeficitRoundRobinSimulator(QueueingSimulator):
 
 
 def main():
+    results = {}
+    raw_results = {}
     traces_folder = Path("traces")
     for trace_file in traces_folder.iterdir():
+        results[trace_file.name] = {}
+        raw_results[trace_file.name] = {}
         packet_arrivals = []
         with open(trace_file, "r") as f:
             for line in f:
@@ -166,19 +173,122 @@ def main():
         # gps(packet_arrivals, 1)  # 1 bit per time unit (microseconds in this case)
         # round_robin(packet_arrivals)
 
-        simulator = DeficitRoundRobinSimulator(packet_arrivals.copy(), 1, 500)
-        simulator.run()
-        print(f"Total time: {simulator.time}")
-        for flow, sent_bits in simulator.sent_bits_per_flow.items():
-            print(f"Flow {flow}:")
-            print(f"\tThroughput: {sent_bits / simulator.time} bits per time unit")
-            print(
-                f"\tAverage delay: {sum(simulator.packet_delays_per_flow[flow]) /len(simulator.packet_delays_per_flow[flow])} time units"
-            )
-            print(f"\tMax delay: {max(simulator.packet_delays_per_flow[flow])}")
-            print(f"\tMin delay: {min(simulator.packet_delays_per_flow[flow])}")
-            print(f"\tStandard Deviation: {np.std(simulator.packet_delays_per_flow[flow])}")
-        print()
+        simulators: List[QueueingSimulator] = [
+            GPSSimulator(packet_arrivals.copy(), 1),
+            RoundRobinSimulator(packet_arrivals.copy(), 1),
+            DeficitRoundRobinSimulator(packet_arrivals.copy(), 1, 500),
+        ]
+
+        for simulator in simulators:
+            simulator.run()
+
+            raw_results[trace_file.name][str(simulator)] = {
+                "packet_delays_per_flow": simulator.packet_delays_per_flow,
+            }
+            results[trace_file.name][str(simulator)] = {
+                "time": simulator.time,
+                "sent_bits_per_flow": simulator.sent_bits_per_flow,
+                "throughput_per_flow": {
+                    flow: sent_bits / simulator.time
+                    for flow, sent_bits in simulator.sent_bits_per_flow.items()
+                },
+                "average_delay_per_flow": {
+                    flow: sum(delays) / len(delays)
+                    for flow, delays in simulator.packet_delays_per_flow.items()
+                },
+                "standard_deviation_per_flow": {
+                    flow: np.std(delays)
+                    for flow, delays in simulator.packet_delays_per_flow.items()
+                },
+            }
+
+    with open("results.json", "w") as f:
+        f.write(json.dumps(results, indent=4))
+
+    # Plot results
+    trace = "trace.txt"
+    delays = {
+        simulator: data["packet_delays_per_flow"].values()
+        for simulator, data in raw_results[trace].items()
+    }
+    nflows = max(len(delays[simulator]) for simulator in delays.keys())
+
+    labels = [simulator for simulator in results[trace].keys()]
+
+    fig, ax = plt.subplots()
+    colors = [
+        "lightblue",
+        "lightgreen",
+        "lightyellow",
+        "plum",
+        "lightcyan",
+        "lightgray",
+        "lightpink",
+    ][:nflows]
+
+    for n, (simulator, delays) in enumerate(delays.items()):
+        bp = ax.boxplot(
+            delays,
+            positions=range(
+                (n * (len(delays) + 1)), (n * (len(delays) + 1)) + len(delays)
+            ),
+            widths=0.6,
+            patch_artist=True,
+        )
+        for patch, color in zip(bp["boxes"], colors):
+            patch.set_facecolor(color)
+
+    # Create a custom legend
+    legend_handles = [plt.Line2D([0], [0], color=color, lw=4) for color in colors]
+    ax.legend(legend_handles, [f"Flow {i}" for i in range(nflows)], title="Flows")
+
+    ax.set_xticks([2, 8, 14])
+    ax.set_xticklabels(labels)
+
+    ax.set_title(f"Packet delay per flow by simulator for trace \"{trace}\"")
+    ax.set_xlabel("Simulators")
+    ax.set_ylabel("Delay in microseconds")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_throughputs(results):
+    trace = "trace.txt"
+    simulators = list(results[trace].keys())
+    throughputs = {}
+    for simulator, data in results[trace].items():
+        for flow, throughput in data["throughput_per_flow"].items():
+            if flow not in throughputs:
+                throughputs[flow] = []
+            throughputs[flow].append(throughput)
+
+    penguin_means = {
+        "Bill Depth": (18.35, 18.43, 14.98),
+        "Bill Length": (38.79, 48.83, 47.50),
+        "Flipper Length": (189.95, 195.82, 217.19),
+    }
+
+    x = np.arange(len(simulators))  # the label locations
+    width = 1 / len(throughputs.keys())  # the width of the bars
+    multiplier = 0
+
+    fig, ax = plt.subplots(layout="constrained")
+
+    for flow, throughput_per_simulator in throughputs.items():
+        offset = width * multiplier
+        rects = ax.bar(x + offset, throughput_per_simulator, width, label=flow)
+        ax.bar_label(rects, padding=3)
+        multiplier += 1
+
+    # Add some text for labels, title and custom x-axis tick labels, etc.
+    ax.set_ylabel("Length (mm)")
+    ax.set_title("Penguin attributes by species")
+    ax.set_xticks(x + width, simulators)
+    ax.legend(loc="upper left", ncols=3)
+    ax.set_ylim(0, 0.25)
+
+    plt.show()
 
 
 def round_robin(packet_arrivals):
