@@ -12,19 +12,21 @@ class QueueingSimulator:
         for packet in packet_arrivals:
             if packet.flow not in self.flow_queues:
                 self.flow_queues[packet.flow] = []
-        self.sent_bits_per_flow = {flow: 0 for flow in self.flow_queues.keys()}
-        self.packet_delays_per_flow = {flow: [] for flow in self.flow_queues.keys()}
         self.time = packet_arrivals[0].time
 
+        # Initialize metrics
+        self.sent_bits_per_flow = {flow: 0 for flow in self.flow_queues.keys()}
+        self.packet_delays_per_flow = {flow: [] for flow in self.flow_queues.keys()}
+
     def enqueue_packets(self):
-        # Enqueue arriving packets at the current time and remove them from the arrival list
+        # Enqueue arriving packets to the corresponding flow queues
         while (
             len(self.packet_arrivals) > 0 and self.packet_arrivals[0].time <= self.time
         ):
             packet = self.packet_arrivals.pop(0)
             self.flow_queues[packet.flow].append(packet)
 
-    def finish_packet(self, packet: Packet):
+    def update_metrics(self, packet: Packet):
         self.sent_bits_per_flow[packet.flow] += packet.size
         self.packet_delays_per_flow[packet.flow].append(
             self.time - packet.time - (packet.size / self.data_rate)
@@ -38,6 +40,7 @@ class GPSSimulator(QueueingSimulator):
     def run(self):
         next_packet_time = self.packet_arrivals[0].time
 
+        # Serve packets until no more packets will arrive and all queues are empty
         while len(self.packet_arrivals) > 0 or any(
             len(queue) > 0 for queue in self.flow_queues.values()
         ):
@@ -70,14 +73,14 @@ class GPSSimulator(QueueingSimulator):
                 )
                 if skippable_rounds == 0:
                     for queue in self.flow_queues.values():
-                        if time_until_next_packet == 0:
-                            break
+                        # Always check for new packets
+                        self.enqueue_packets()
+
                         if len(queue) > 0:
                             self.time += 1 / self.data_rate
-                            time_until_next_packet -= 1 / self.data_rate
                             queue[0].remaining_size -= 1
                             if queue[0].remaining_size == 0:
-                                self.finish_packet(queue.pop(0))
+                                self.update_metrics(queue.pop(0))
                 else:
                     self.time += (
                         skippable_rounds / self.data_rate
@@ -85,8 +88,6 @@ class GPSSimulator(QueueingSimulator):
                     for queue in self.flow_queues.values():
                         if len(queue) > 0:
                             queue[0].remaining_size -= skippable_rounds
-                            if queue[0].remaining_size == 0:
-                                self.finish_packet(queue.pop(0))
 
             # If all packets finished, move time to the next packet time
             if next_packet_time is not None and next_packet_time > self.time:
@@ -108,7 +109,7 @@ class RoundRobinSimulator(QueueingSimulator):
                 if len(queue) > 0:
                     packet = queue.pop(0)
                     self.time += packet.size / self.data_rate
-                    self.finish_packet(packet)
+                    self.update_metrics(packet)
 
                     # While sending the packet, check if any new packets arrived
                     self.enqueue_packets()
@@ -137,19 +138,21 @@ class DeficitRoundRobinSimulator(QueueingSimulator):
 
             for flow, queue in self.flow_queues.items():
                 if len(queue) > 0:
-                    # Is the deficit of a flow increased only if it has packets to send?
                     self.deficit_counters[flow] += self.quantum
-                    # Is a flow allowed to consume all of its built up deficit in one go? (using multiple packets)
                     while (
                         len(queue) > 0 and self.deficit_counters[flow] >= queue[0].size
                     ):
                         packet = queue.pop(0)
                         self.deficit_counters[flow] -= packet.size
                         self.time += packet.size / self.data_rate
-                        self.finish_packet(packet)
+                        self.update_metrics(packet)
 
                     # While sending the packet, check if any new packets arrived
                     self.enqueue_packets()
+
+                    # Reset deficit counter if the queue is empty
+                    if len(queue) == 0:
+                        self.deficit_counters[flow] = 0
 
             # All flows might be empty, so skip time to the next packet arrival
             if len(self.packet_arrivals) > 0 and all(
