@@ -93,12 +93,12 @@ class GPSSimulator(QueueingSimulator):
                             if queue[0].remaining_size == 0:
                                 self.finish_packet(queue.pop(0))
                 else:
+                    self.time += (
+                        skippable_rounds / self.data_rate
+                    ) * number_of_active_flows
                     for queue in self.flow_queues.values():
                         if len(queue) > 0:
-                            queue[
-                                0
-                            ].remaining_size -= skippable_rounds
-                            self.time += skippable_rounds / self.data_rate
+                            queue[0].remaining_size -= skippable_rounds
                             if queue[0].remaining_size == 0:
                                 self.finish_packet(queue.pop(0))
 
@@ -134,7 +134,7 @@ class RoundRobinSimulator(QueueingSimulator):
                 self.time = self.packet_arrivals[0].time
 
     def __str__(self):
-        return f"Round-Robin"
+        return f"Round robin (RR)"
 
 
 class DeficitRoundRobinSimulator(QueueingSimulator):
@@ -172,7 +172,7 @@ class DeficitRoundRobinSimulator(QueueingSimulator):
                 self.time = self.packet_arrivals[0].time
 
     def __str__(self):
-        return f"Deficit Round-Robin"
+        return f"Deficit round robin (DRR)"
 
 
 def main():
@@ -195,9 +195,6 @@ def main():
                 flow, size, time = line.split()
                 packet_arrivals.append(Packet(int(flow), float(size), int(time)))
         packet_arrivals.sort(key=lambda x: x.time)
-
-        # gps(packet_arrivals, 1)  # 1 bit per time unit (microseconds in this case)
-        # round_robin(packet_arrivals)
 
         simulators: List[QueueingSimulator] = [
             GPSSimulator(packet_arrivals.copy(), 1),
@@ -231,8 +228,59 @@ def main():
     with open("results.json", "w") as f:
         f.write(json.dumps(results, indent=4))
 
+    generate_latex_tables(results)
+
     # Plot results
-    trace = "trace.txt"
+    for trace in ["trace.txt", "trace2.txt", "trace3.txt"]:
+        plot_boxplots(results, raw_results, trace)
+
+def generate_latex_tables(results):
+    indent = "                     "
+    with open("tables.txt", "w") as f:
+        for trace, data in results.items():
+            f.write(f"Trace: {trace}\n")
+            f.write("\\begin{tabular}{ll|lllll|}\n")
+            f.write(indent+"& & Flow 0 & Flow 1 & Flow 2 & Flow 3 & Flow 4 \\\\\n")
+            f.write(indent + "\\hline\n")
+            for simulator, results in zip(["GPS", "RR", "DRR"], data.values()):
+                # Write throughput per flow, average delay per flow, and standard deviation per flow into a latex table with the flows being the columns and the metrics being the rows
+                f.write(("\\multirow{3}{*}{" + simulator + "} ").ljust(21))
+                f.write(
+                    f"& Throughput & "
+                    + " & ".join(
+                        [
+                            str(round(t, 4))
+                            for t in results["throughput_per_flow"].values()
+                        ]
+                    )
+                    + " \\\\\n"
+                )
+                f.write(
+                    f"{indent}& Avg. Delay & "
+                    + " & ".join(
+                        [
+                            str(int(round(t, 0)))
+                            for t in results["average_delay_per_flow"].values()
+                        ]
+                    )
+                    + " \\\\\n"
+                )
+                f.write(
+                    f"{indent}& Std. Dev. & "
+                    + " & ".join(
+                        [
+                            str(int(round(t, 0)))
+                            for t in results["standard_deviation_per_flow"].values()
+                        ]
+                    )
+                    + " \\\\\n"
+                )
+                f.write(indent+"\\hline\n")
+            f.write("\\end{tabular}\n")
+            f.write("\n")
+
+
+def plot_boxplots(results, raw_results, trace):
     delays = {
         simulator: data["packet_delays_per_flow"].values()
         for simulator, data in raw_results[trace].items()
@@ -271,12 +319,10 @@ def main():
     ax.set_xticks([2, 8, 14])
     ax.set_xticklabels(labels)
 
-    ax.set_title(f'Packet delay per flow by simulator for trace "{trace}"')
-    ax.set_xlabel("Simulators")
     ax.set_ylabel("Delay in microseconds")
 
     plt.tight_layout()
-    plt.show()
+    plt.savefig(f"boxplot-{trace}.png")
 
 
 def plot_throughputs(results):
@@ -288,12 +334,6 @@ def plot_throughputs(results):
             if flow not in throughputs:
                 throughputs[flow] = []
             throughputs[flow].append(throughput)
-
-    penguin_means = {
-        "Bill Depth": (18.35, 18.43, 14.98),
-        "Bill Length": (38.79, 48.83, 47.50),
-        "Flipper Length": (189.95, 195.82, 217.19),
-    }
 
     x = np.arange(len(simulators))  # the label locations
     width = 1 / len(throughputs.keys())  # the width of the bars
@@ -315,24 +355,6 @@ def plot_throughputs(results):
     ax.set_ylim(0, 0.25)
 
     plt.show()
-
-
-def round_robin(packet_arrivals):
-    # while any(len(queue) > 0 for queue in flow_queues.values()):
-    #     # Find flow with earliest finishing round
-    #     next_packet, min_finishing_round = None, None
-    #     for flow, queue in flow_queues.items():
-    #         if len(queue) == 0:
-    #             continue
-    #         packet = queue[0]
-    #         if next_packet is None or finishing_round < min_finishing_round:
-    #             next_packet = packet
-    #             min_finishing_round = finishing_round
-
-    #     print(f"Flow {next_packet.flow} sent packet {next_packet}")
-    #     flow_queues[next_packet.flow].pop(0)
-    pass
-
 
 if __name__ == "__main__":
     main()
